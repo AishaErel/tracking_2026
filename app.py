@@ -22,12 +22,30 @@ try:
 except Exception:
     pass  # no secrets configured (normal for local development)
 
-from mentors import get_all_mentors
-from mentor_checkins import submit_checkin, get_flagged_checkins, get_ai_flagged_checkins, this_monday
+from mentors import get_all_mentors, get_mentor_by_name
+from mentor_checkins import (
+    submit_checkin,
+    get_flagged_checkins,
+    get_ai_flagged_checkins,
+    get_latest_checkin_for_group,
+    this_monday,
+)
 from ai_layer import check_for_concerns
 from coordinator_agent import generate_weekly_summary
-from students import get_all_group_names, get_nickname_map_for_group
-from student_checkins import submit_student_checkin, get_not_coming_this_week
+from students import get_all_group_names, get_nickname_map_for_group, get_students_map_for_group
+from student_checkins import (
+    submit_student_checkin,
+    get_not_coming_this_week,
+    get_checkins_for_group,
+    compute_monthly_scorecard,
+)
+from wishlist_items import (
+    add_wishlist_item,
+    get_wishlist_items_for_student,
+    get_wishlist_items_for_student_month,
+    update_wishlist_item,
+    delete_wishlist_item,
+)
 from calendar_events import get_upcoming_events, get_general_events, add_event
 from rsvps import submit_rsvp, get_coming_count_for_event, get_rsvps_for_event
 
@@ -159,8 +177,8 @@ st.markdown(
 
 selected = option_menu(
     menu_title=None,
-    options=["Mentor Check-in", "Student Check-in", "Events Calendar", "Coordinator Dashboard"],
-    icons=["mortarboard-fill", "backpack2-fill", "calendar3", "bar-chart-line-fill"],
+    options=["Mentor Check-in", "Mentor Dashboard", "Student Check-in", "Wishlist", "Parent View", "Events Calendar", "Coordinator Dashboard"],
+    icons=["mortarboard-fill", "person-lock", "backpack2-fill", "gift-fill", "heart-fill", "calendar3", "bar-chart-line-fill"],
     orientation="horizontal",
     styles={
         "container": {"padding": "0!important", "background-color": "#FDEFEF"},
@@ -202,6 +220,22 @@ if selected == "Mentor Check-in":
             for m in mentors
         }
         selected_name = st.selectbox("Your name", list(mentor_names.keys()))
+        mentor_id = mentor_names[selected_name]
+
+        auth_key = f"mentor_authenticated_{mentor_id}"
+        if not st.session_state.get(auth_key):
+            entered_mentor_password = st.text_input(
+                "Your password", type="password", key=f"mentor_pw_checkin_{mentor_id}"
+            )
+            if st.button("Unlock", key=f"mentor_unlock_checkin_{mentor_id}"):
+                mentor_record = get_mentor_by_name(selected_name)
+                stored_password = mentor_record["fields"].get("Password", "") if mentor_record else ""
+                if mentor_record and stored_password and entered_mentor_password == stored_password:
+                    st.session_state[auth_key] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+            st.stop()
 
         with st.form("mentor_checkin_form"):
             st.markdown('<div class="section-label">Attendance</div>', unsafe_allow_html=True)
@@ -234,7 +268,7 @@ if selected == "Mentor Check-in":
                     flagged_situation=flagged_situation,
                 )
                 submit_checkin(
-                    mentor_record_id=mentor_names[selected_name],
+                    mentor_record_id=mentor_id,
                     week_of=week_of.isoformat(),
                     food_confirmed=food_confirmed,
                     students_expected=int(students_expected),
@@ -250,6 +284,86 @@ if selected == "Mentor Check-in":
                     ai_flag_reason=ai_result["ai_flag_reason"],
                 )
                 st.success("Check-in submitted.")
+
+# ---------- MENTOR DASHBOARD (password-gated, own group only) ----------
+elif selected == "Mentor Dashboard":
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.5rem;">
+            <div style="width:44px;">{mentor_avatar_svg}</div>
+            <h2 style="margin:0;">Mentor Dashboard</h2>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption("See your own students' weekly check-ins. Other mentors' groups aren't shown here.")
+
+    mentors = get_all_mentors()
+    if not mentors:
+        st.warning("No mentors found. Add mentors in Airtable first.")
+    else:
+        mentor_names = [m["fields"].get("Name", f"Unnamed mentor ({m['id'][-4:]})") for m in mentors]
+        dash_selected_name = st.selectbox("Your name", mentor_names, key="mentor_dashboard_name")
+
+        mentor_record = get_mentor_by_name(dash_selected_name)
+        mentor_id = mentor_record["id"] if mentor_record else None
+
+        auth_key = f"mentor_authenticated_{mentor_id}"
+        if not st.session_state.get(auth_key):
+            entered_mentor_password = st.text_input(
+                "Your password", type="password", key=f"mentor_pw_dash_{mentor_id}"
+            )
+            if st.button("Unlock", key=f"mentor_unlock_dash_{mentor_id}"):
+                stored_password = mentor_record["fields"].get("Password", "") if mentor_record else ""
+                if mentor_record and stored_password and entered_mentor_password == stored_password:
+                    st.session_state[auth_key] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+            st.stop()
+
+        mentor_group = mentor_record["fields"].get("Group Name", "") if mentor_record else ""
+
+        if not mentor_group:
+            st.warning("No group is set for this mentor in Airtable yet — nothing to show.")
+        else:
+            st.markdown(f"**Group: {mentor_group}**")
+
+            show_all_weeks = st.checkbox("Show all weeks (default: this week only)", key="mentor_dash_all_weeks")
+
+            checkins = (
+                get_checkins_for_group(mentor_group)
+                if show_all_weeks
+                else get_checkins_for_group(mentor_group, week_of=this_monday())
+            )
+
+            if not checkins:
+                st.info("No check-ins found for your group yet.")
+            else:
+                for record in checkins:
+                    f = record["fields"]
+                    student_name = f.get("Name (from Student Name)", ["Unknown"])
+                    student_name = student_name[0] if isinstance(student_name, list) else student_name
+
+                    with st.container(border=True):
+                        st.markdown(f"**{student_name}** — Week of {f.get('Week Of', '—')}")
+
+                        coming = f.get("Coming This Week?", None)
+                        if coming is False:
+                            st.caption(f"Not coming — {f.get('The Reason Why (If not Coming)', 'no reason given')}")
+                        elif coming is True:
+                            st.caption("Coming this week")
+
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.write(f"**Memorization goal:** {f.get('Memorization Goal', '—')}")
+                            st.write(f"**Salah goal:** {f.get('Salah (Prayer) Goal', '—')}")
+                        with col_b:
+                            st.write(f"**Book pages read:** {f.get('Book Pages Read', 0)}")
+                            st.write(f"**Quran pages:** {f.get('Quran Pages', 0)}")
+
+                        if f.get("Activity Request"):
+                            st.write(f"**Activity request:** {f.get('Activity Request')}")
 
 # ---------- STUDENT CHECK-IN ----------
 elif selected == "Student Check-in":
@@ -279,6 +393,29 @@ elif selected == "Student Check-in":
             with col_b:
                 selected_nickname = st.selectbox("Your nickname", list(nickname_map.keys()))
 
+            students_map = get_students_map_for_group(selected_group)
+            student_info = students_map.get(selected_nickname, {})
+            student_record_id = student_info.get("id")
+            student_pin = student_info.get("pin", "")
+
+            if not student_pin:
+                st.warning("No PIN has been set for you yet — ask your mentor or coordinator to add one in Airtable.")
+                st.stop()
+
+            pin_ok_key = f"student_pin_ok_{student_record_id}"
+            if not st.session_state.get(pin_ok_key):
+                entered_pin = st.text_input("Enter your PIN", type="password", key=f"pin_input_{student_record_id}")
+                if st.button("Verify", key=f"pin_verify_{student_record_id}"):
+                    if entered_pin == student_pin:
+                        st.session_state[pin_ok_key] = True
+                        # Reused by Events Calendar so a student doesn't need
+                        # to identify themselves twice in the same session.
+                        st.session_state["identified_student_id"] = student_record_id
+                        st.rerun()
+                    else:
+                        st.error("Incorrect PIN.")
+                st.stop()
+
             with st.form("student_checkin_form"):
                 st.markdown('<div class="section-label">Attendance</div>', unsafe_allow_html=True)
                 col1, col2 = st.columns(2)
@@ -288,9 +425,16 @@ elif selected == "Student Check-in":
                 with col2:
                     reason_if_not_coming = st.text_input("If not coming, why?")
 
-                st.markdown('<div class="section-label">Progress</div>', unsafe_allow_html=True)
-                salah_goal_met = st.text_area("Salah (prayer) goal — how did it go this week?")
-                memorization_goal = st.text_input("Memorization goal")
+                st.markdown('<div class="section-label">Goals</div>', unsafe_allow_html=True)
+                col_s, col_m = st.columns(2)
+                with col_s:
+                    salah_goal_met = st.checkbox("Did you meet your salah goal this week?")
+                    salah_notes = st.text_area("Notes (optional)", key="salah_notes")
+                with col_m:
+                    memorization_goal_met = st.checkbox("Did you meet your memorization goal this week?")
+                    memorization_notes = st.text_area("Notes (optional)", key="memorization_notes")
+
+                st.markdown('<div class="section-label">Reading</div>', unsafe_allow_html=True)
                 col3, col4 = st.columns(2)
                 with col3:
                     book_pages_read = st.number_input("Book pages read", min_value=0, step=1)
@@ -304,22 +448,295 @@ elif selected == "Student Check-in":
 
                 if submitted:
                     submit_student_checkin(
-                        student_record_id=nickname_map[selected_nickname],
+                        student_record_id=student_record_id,
                         week_of=week_of.isoformat(),
                         coming_this_week=coming_this_week,
                         reason_if_not_coming=reason_if_not_coming,
-                        memorization_goal=memorization_goal,
                         salah_goal_met=salah_goal_met,
-                        book_pages=int(book_pages_read),
+                        salah_notes=salah_notes,
+                        memorization_goal_met=memorization_goal_met,
+                        memorization_notes=memorization_notes,
+                        book_pages_read=int(book_pages_read),
                         pages_read=int(pages_read),
                         activity_request=activity_request,
                     )
                     st.success("Check-in submitted.")
 
+# ---------- WISHLIST ----------
+elif selected == "Wishlist":
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.5rem;">
+            <div style="width:44px;">{student_avatar_svg}</div>
+            <h2 style="margin:0;">Your Wishlist</h2>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Reuse identification if already unlocked elsewhere this session
+    # (Student Check-in or Events Calendar); otherwise ask here.
+    student_record_id = st.session_state.get("identified_student_id")
+
+    if not student_record_id:
+        wl_group_names = get_all_group_names()
+        if not wl_group_names:
+            st.warning("No students found. Add students in Airtable first.")
+            st.stop()
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            wl_group = st.selectbox("Your group", wl_group_names, key="wishlist_group")
+
+        wl_students_map = get_students_map_for_group(wl_group)
+        if not wl_students_map:
+            st.info("No students with a nickname set yet in this group.")
+            st.stop()
+
+        with col_b:
+            wl_nickname = st.selectbox("Your nickname", list(wl_students_map.keys()), key="wishlist_nickname")
+
+        wl_info = wl_students_map.get(wl_nickname, {})
+        wl_candidate_id = wl_info.get("id")
+        wl_stored_pin = wl_info.get("pin", "")
+
+        if not wl_stored_pin:
+            st.warning("No PIN has been set for you yet — ask your mentor or coordinator to add one in Airtable.")
+            st.stop()
+
+        pin_ok_key = f"student_pin_ok_{wl_candidate_id}"
+        if not st.session_state.get(pin_ok_key):
+            wl_entered_pin = st.text_input("Your PIN", type="password", key=f"wishlist_pin_{wl_candidate_id}")
+            if st.button("Verify", key=f"wishlist_pin_verify_{wl_candidate_id}"):
+                if wl_entered_pin == wl_stored_pin:
+                    st.session_state[pin_ok_key] = True
+                    st.session_state["identified_student_id"] = wl_candidate_id
+                    st.rerun()
+                else:
+                    st.error("Incorrect PIN.")
+            st.stop()
+
+        student_record_id = wl_candidate_id
+
+    # ---------- Add a new item ----------
+    st.markdown('<div class="section-label">Add an item</div>', unsafe_allow_html=True)
+    with st.form("add_wishlist_form", clear_on_submit=True):
+        new_item_link = st.text_input("Amazon link")
+        new_item_price = st.number_input("Price ($)", min_value=0.0, step=0.5, format="%.2f")
+        add_submitted = st.form_submit_button("Add to wishlist", type="primary")
+
+        if add_submitted:
+            if not new_item_link:
+                st.error("Please add a link before submitting.")
+            else:
+                add_wishlist_item(
+                    student_record_id=student_record_id,
+                    item_link=new_item_link,
+                    item_price=float(new_item_price),
+                    week_added=date.today().isoformat(),
+                )
+                st.success("Added to your wishlist.")
+                st.rerun()
+
+    # ---------- History: view / edit / delete ----------
+    st.markdown('<div class="section-label">Your items</div>', unsafe_allow_html=True)
+    all_items = get_wishlist_items_for_student(student_record_id)
+
+    if not all_items:
+        st.info("Nothing on your wishlist yet — add something above.")
+    else:
+        for item in all_items:
+            f = item["fields"]
+            with st.container(border=True):
+                col_info, col_actions = st.columns([3, 1])
+                with col_info:
+                    st.markdown(f"[{f.get('Item Link', 'Untitled item')}]({f.get('Item Link', '#')})")
+                    st.caption(f"${f.get('Item Price', 0):.2f} · added {f.get('Week Added', '—')}")
+                    if f.get("Selected For Reward"):
+                        st.success("✓ Selected for this month's reward")
+                with col_actions:
+                    with st.expander("Edit"):
+                        edited_link = st.text_input(
+                            "Link", value=f.get("Item Link", ""), key=f"edit_link_{item['id']}"
+                        )
+                        edited_price = st.number_input(
+                            "Price ($)",
+                            value=float(f.get("Item Price", 0)),
+                            min_value=0.0,
+                            step=0.5,
+                            format="%.2f",
+                            key=f"edit_price_{item['id']}",
+                        )
+                        col_save, col_delete = st.columns(2)
+                        with col_save:
+                            if st.button("Save", key=f"save_{item['id']}"):
+                                update_wishlist_item(
+                                    item["id"], {"Item Link": edited_link, "Item Price": edited_price}
+                                )
+                                st.rerun()
+                        with col_delete:
+                            if st.button("Delete", key=f"delete_{item['id']}"):
+                                delete_wishlist_item(item["id"])
+                                st.rerun()
+
+    # ---------- This month's reward selection ----------
+    st.divider()
+    st.markdown('<div class="section-label">This month\'s reward</div>', unsafe_allow_html=True)
+
+    today = date.today()
+    scorecard = compute_monthly_scorecard(student_record_id, today.year, today.month)
+    tier = scorecard["tier"]
+    tier_caps = {"full": 30, "partial": 15, "none": 0}
+    tier_labels = {"full": "Full reward", "partial": "Partial reward", "none": "No reward yet"}
+    cap = tier_caps[tier]
+
+    st.metric("Goal progress this month", f"{scorecard['percentage']}%")
+    st.write(f"**{tier_labels[tier]}** — up to **${cap}** this month")
+
+    if cap == 0:
+        st.info("Keep working on your goals — you'll unlock a reward once you hit 60% or more.")
+    else:
+        month_items = get_wishlist_items_for_student_month(student_record_id, today.year, today.month)
+        if not month_items:
+            st.info("Add items above, then come back here to pick up to your reward amount.")
+        else:
+            st.caption(f"Select items totaling up to ${cap}:")
+            running_total = 0.0
+            chosen_ids = []
+            for item in month_items:
+                f = item["fields"]
+                price = float(f.get("Item Price", 0))
+                already_selected = bool(f.get("Selected For Reward"))
+                would_exceed = (running_total + price) > cap
+                disabled = would_exceed and not already_selected
+                checked = st.checkbox(
+                    f"{f.get('Item Link', 'Untitled item')} — ${price:.2f}",
+                    value=already_selected,
+                    disabled=disabled,
+                    key=f"reward_select_{item['id']}",
+                )
+                if checked:
+                    running_total += price
+                    chosen_ids.append(item["id"])
+
+            st.caption(f"Total selected: ${running_total:.2f} / ${cap}")
+
+            if st.button("Confirm my selection", type="primary"):
+                for item in month_items:
+                    update_wishlist_item(
+                        item["id"], {"Selected For Reward": item["id"] in chosen_ids}
+                    )
+                st.success("Saved — your coordinator will follow up to get these to you.")
+                st.rerun()
+
+# ---------- PARENT VIEW ----------
+elif selected == "Parent View":
+    if "parent_authenticated" not in st.session_state:
+        st.session_state.parent_authenticated = False
+
+    if not st.session_state.parent_authenticated:
+        st.subheader("Parent Access")
+        entered_parent_password = st.text_input("Enter parent password", type="password", key="parent_pw")
+        if st.button("Unlock", key="parent_unlock"):
+            if entered_parent_password == os.getenv("PARENT_PASSWORD"):
+                st.session_state.parent_authenticated = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+        st.stop()
+
+    st.markdown(
+        """
+        <div style="margin-bottom:0.5rem;">
+            <h2 style="margin:0;">This Week's Sohbet &amp; Activity</h2>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption("This week's discussion topic and activity for your daughter's group.")
+
+    group_names = get_all_group_names()
+    if not group_names:
+        st.warning("No groups found yet.")
+    else:
+        selected_group = st.selectbox("Your daughter's group", group_names, key="parent_group_select")
+
+        checkin = get_latest_checkin_for_group(selected_group)
+
+        if not checkin:
+            st.info("No check-in has been submitted for this group yet.")
+        else:
+            f = checkin["fields"]
+            with st.container(border=True):
+                st.markdown(f"**Week of {f.get('Week Of', '—')}**")
+                st.markdown("##### This week's sohbet")
+                st.write(f.get("Discussion Topic of the Week", "Not recorded yet."))
+                st.markdown("##### This week's activity")
+                st.write(f.get("Activity Name of the Week", "Not recorded yet."))
+
 # ---------- ACADEMIC CALENDAR ----------
 elif selected == "Events Calendar":
+    if not (
+        st.session_state.get("parent_authenticated")
+        or st.session_state.get("coordinator_authenticated")
+        or st.session_state.get("identified_student_id")
+    ):
+        st.subheader("Access")
+        who = st.radio("I am a:", ["Parent", "Student"], key="events_who", horizontal=True)
+
+        if who == "Parent":
+            entered_events_password = st.text_input("Enter parent password", type="password", key="events_pw")
+            if st.button("Unlock", key="events_unlock_parent"):
+                if entered_events_password == os.getenv("PARENT_PASSWORD"):
+                    st.session_state.parent_authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+        else:
+            ev_group_names = get_all_group_names()
+            if not ev_group_names:
+                st.warning("No groups found yet.")
+            else:
+                ev_group = st.selectbox("Your group", ev_group_names, key="events_student_group")
+                ev_students_map = get_students_map_for_group(ev_group)
+                if not ev_students_map:
+                    st.info("No students with a nickname set yet in this group.")
+                else:
+                    ev_nickname = st.selectbox(
+                        "Your nickname", list(ev_students_map.keys()), key="events_student_nickname"
+                    )
+                    ev_pin = st.text_input("Your PIN", type="password", key="events_student_pin")
+                    if st.button("Unlock", key="events_unlock_student"):
+                        ev_info = ev_students_map.get(ev_nickname, {})
+                        ev_stored_pin = ev_info.get("pin", "")
+                        if ev_stored_pin and ev_pin == ev_stored_pin:
+                            st.session_state["identified_student_id"] = ev_info.get("id")
+                            st.rerun()
+                        else:
+                            st.error("Incorrect PIN.")
+        st.stop()
+
     st.subheader("Events Calendar")
-    st.caption("General program events — visible to everyone.")
+    st.caption("General program events.")
+
+    # If a student is signed in (either just now, or already identified via
+    # Student Check-in this session), we know exactly who to check RSVP
+    # status for. Parents/coordinator get an optional picker instead, since
+    # they aren't tied to one specific student.
+    identified_student_id = st.session_state.get("identified_student_id")
+    if not identified_student_id:
+        with st.expander("Check a student's RSVP status (optional)"):
+            id_group_names = get_all_group_names()
+            id_options = {}
+            for g in id_group_names:
+                for nickname, sid in get_nickname_map_for_group(g).items():
+                    id_options[f"{nickname} ({g})"] = sid
+            if id_options:
+                id_label = st.selectbox(
+                    "Student", ["—"] + list(id_options.keys()), key="events_identify_select_optional"
+                )
+                if id_label != "—":
+                    identified_student_id = id_options[id_label]
 
     general_events = get_general_events()
 
@@ -353,6 +770,18 @@ elif selected == "Events Calendar":
                     if st.session_state.get("coordinator_authenticated"):
                         coming_count = get_coming_count_for_event(record["id"])
                         st.caption(f"{coming_count} coming so far")
+
+                    if identified_student_id:
+                        rsvps_this_event = get_rsvps_for_event(record["id"])
+                        already_going = any(
+                            r["fields"].get("Coming")
+                            and identified_student_id in r["fields"].get("Student Name", [])
+                            for r in rsvps_this_event
+                        )
+                        if already_going:
+                            st.success("✓ You're signed up for this event.")
+                        else:
+                            st.caption("Not signed up for this event yet.")
 
                     with st.expander("RSVP to this event"):
                         success_key = f"rsvp_success_{record['id']}"

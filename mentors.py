@@ -18,6 +18,17 @@ def get_mentor_by_email(email: str) -> dict | None:
     return records[0] if records else None
 
 
+def get_mentor_by_name(name: str) -> dict | None:
+    """
+    Looks up a single mentor by their Name field. Used by the Mentor
+    Dashboard to fetch that mentor's Password and Group Name after they
+    pick their name from a selectbox, so we can gate access to only
+    their own group's student check-ins.
+    """
+    records = list_records(TABLE_NAME, formula=f"{{Name}} = '{name}'")
+    return records[0] if records else None
+
+
 def add_mentor(name: str, email: str, group_name: str, grade_level: str) -> dict:
     fields = {
         "Name": name,

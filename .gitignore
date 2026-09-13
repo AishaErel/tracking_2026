@@ -1,6 +1,11 @@
-   .env
-   .streamlit/secrets.toml
-   venv/
-   claude_env/
-   __pycache__/
-   *.pyc
+.env
+.streamlit/secrets.toml
+venv/
+claude_env/
+__pycache__/
+*.py[cod]
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example

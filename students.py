@@ -36,6 +36,24 @@ def get_nickname_map_for_group(group_name: str, active_only: bool = True) -> dic
     }
 
 
+def get_students_map_for_group(group_name: str, active_only: bool = True) -> dict:
+    """
+    Returns {nickname: {"id": record_id, "pin": pin}} for students in a
+    given group. Used by Student Check-in to verify a student's own PIN
+    before recording a check-in under their name — since check-ins now
+    feed into the monthly points/reward system, this stops one student
+    from submitting (accidentally or otherwise) as someone else.
+    """
+    students = get_students_by_group(group_name)
+    if active_only:
+        students = [s for s in students if s["fields"].get("Active")]
+    return {
+        s["fields"]["Nickname"]: {"id": s["id"], "pin": s["fields"].get("PIN", "")}
+        for s in students
+        if s["fields"].get("Nickname")
+    }
+
+
 def add_student(name: str, group_name: str) -> dict:
     fields = {
         "Name": name,
