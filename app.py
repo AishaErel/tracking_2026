@@ -342,7 +342,7 @@ elif selected == "Mentor Dashboard":
             else:
                 for record in checkins:
                     f = record["fields"]
-                    student_name = f.get("Name", "Unknown")
+                    student_name = f.get("Name (from Name)", "Unknown")
                     student_name = student_name[0] if isinstance(student_name, list) else student_name
 
                     with st.container(border=True):
@@ -928,7 +928,7 @@ elif selected == "Coordinator Dashboard":
         if not_coming:
             for record in not_coming:
                 f = record["fields"]
-                name = f.get("Name", "Unknown")
+                name = f.get("Name (from Name)", "Unknown")
                 name = name[0] if isinstance(name, list) else name
                 reason = f.get("The Reason Why (If not Coming)", "No reason given")
                 with st.container(border=True):
@@ -950,7 +950,7 @@ elif selected == "Coordinator Dashboard":
                     coming_names = []
                     for r in rsvps:
                         if r["fields"].get("Coming"):
-                            name = r["fields"].get("Name", "Unknown")
+                            name = r["fields"].get("Name (from Name)", "Unknown")
                             name = name[0] if isinstance(name, list) else name
                             coming_names.append(name)
 
